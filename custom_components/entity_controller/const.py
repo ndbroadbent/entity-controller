@@ -50,6 +50,7 @@ CONF_TRANSITION_BEHAVIOUR_OFF = 'off'
 CONF_TRANSITION_BEHAVIOUR_IGNORE = 'ignore'
 SENSOR_TYPE_DURATION = "duration"
 SENSOR_TYPE_EVENT = "event"
+SENSOR_TYPE_CHANGE = "change"
 MODE_DAY = "day"
 MODE_NIGHT = "night"
 
@@ -64,6 +65,7 @@ CONF_TRIGGER_ON_ACTIVATE = "trigger_on_activate"
 CONF_TRIGGER_ON_DEACTIVATE = "trigger_on_deactivate"
 CONF_SENSOR = "sensor"
 CONF_SENSORS = "sensors"
+CONF_FORCED_SENSORS = "forced_sensors"
 CONF_SERVICE_DATA = "service_data"
 CONF_SERVICE_DATA_OFF = "service_data_off"
 CONF_STATE_ENTITIES = "state_entities"
@@ -81,7 +83,7 @@ MODE_NIGHT = 'night'
 CONSTRAIN_START = 1
 CONSTRAIN_END = 2
 STATES = ['idle', 'overridden', 'constrained', 'blocked',
-          {'name': 'active', 'children': ['timer', 'stay_on'],
+          {'name': 'active', 'children': ['timer', 'forced', 'stay_on'],
            'initial': False}]
 CONF_IGNORE_STATE_CHANGES_UNTIL = "grace_period"
 

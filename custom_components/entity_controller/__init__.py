@@ -71,6 +71,7 @@ from .const import (
 
     SENSOR_TYPE_DURATION,
     SENSOR_TYPE_EVENT,
+    SENSOR_TYPE_CHANGE,
     MODE_DAY,
     MODE_NIGHT,
     DEFAULT_DELAY,
@@ -82,6 +83,7 @@ from .const import (
     CONF_TRIGGER_ON_DEACTIVATE,
     CONF_SENSOR,
     CONF_SENSORS,
+    CONF_FORCED_SENSORS,
     CONF_SERVICE_DATA,
     CONF_SERVICE_DATA_OFF,
     CONF_STATE_ENTITIES,
@@ -140,6 +142,7 @@ ENTITY_SCHEMA = vol.Schema(
         vol.Optional(CONF_SENSOR_RESETS_TIMER, default=False): cv.boolean,
         vol.Optional(CONF_SENSOR, default=[]): cv.entity_ids,
         vol.Optional(CONF_SENSORS, default=[]): cv.entity_ids,
+        vol.Optional(CONF_FORCED_SENSORS, default=[]): cv.entity_ids,
         vol.Optional(CONF_CONTROL_ENTITIES, default=[]): cv.entity_ids,
         vol.Optional(CONF_CONTROL_ENTITY, default=[]): cv.entity_ids,
         vol.Optional(CONF_TRIGGER_ON_ACTIVATE, default=None): cv.entity_ids,
@@ -262,7 +265,7 @@ async def async_setup(hass, config):
     )
 
     machine.add_transition(
-        trigger="enter", source="active", dest="active_timer", unless="will_stay_on"
+        trigger="enter", source="active", dest="active_timer", unless=["will_stay_on", "is_forced_sensor_on"]
     )
     machine.add_transition(
         trigger="enter",
@@ -270,6 +273,19 @@ async def async_setup(hass, config):
         dest="active_stay_on",
         conditions="will_stay_on",
     )
+    machine.add_transition(
+        trigger="enter",
+        source="active",
+        dest="active_forced",
+        conditions="is_forced_sensor_on",
+    )
+
+    machine.add_transition(
+        trigger="forced_sensor_off",
+        source="active_forced",
+        dest="idle"
+    )
+
 
     # Active Timer
     machine.add_transition(
@@ -492,6 +508,7 @@ class Model:
         self.stateEntities = []
         self.controlEntities = []
         self.sensorEntities = []
+        self.forcedSensorEntities = []
         self.triggerOnDeactivate = []
         self.triggerOnActivate = []
         self.timer_handle = None
@@ -586,23 +603,28 @@ class Model:
 
         if (
             self.matches(new.state, self.SENSOR_OFF_STATE)
-            and self.is_duration_sensor()
-            and self.is_active_timer()
         ):
-            self.set_context(new.context)
-            self.update(last_triggered_by=entity, sensor_turned_off_at=datetime.now())
+            if self.is_change_sensor() and self.is_active_timer():
+                self.sensor_on()
 
-            # If configured, reset timer when duration sensor goes off
-            if self.config[CONF_SENSOR_RESETS_TIMER]:
-                self.log.debug("sensor_state_change :: CONF_SENSOR_RESETS_TIMER")
-                self.update(
-                    notes="The sensor turned off and reset the timeout. Timer started."
-                )
-                self._reset_timer()
+            elif (self.is_duration_sensor() and self.is_active_timer()):
+                self.set_context(new.context)
+                self.update(last_triggered_by=entity, sensor_turned_off_at=datetime.now())
+
+                # If configured, reset timer when duration sensor goes off
+                if self.config[CONF_SENSOR_RESETS_TIMER]:
+                    self.log.debug("sensor_state_change :: CONF_SENSOR_RESETS_TIMER")
+                    self.update(
+                        notes="The sensor turned off and reset the timeout. Timer started."
+                    )
+                    self._reset_timer()
+                else:
+                    # We only care about sensor off state changes when the sensor is a duration sensor and we are in active_timer state.
+                    self.sensor_off_duration()
+                    self.log.debug("sensor_state_change :: CONF_SENSOR_RESETS_TIMER - normal")
             else:
-                # We only care about sensor off state changes when the sensor is a duration sensor and we are in active_timer state.
-                self.sensor_off_duration()
-                self.log.debug("sensor_state_change :: CONF_SENSOR_RESETS_TIMER - normal")
+                if self.is_forced_sensor_off():
+                    self.forced_sensor_off()
 
     @callback
     def override_state_change(self, entity, old, new):
@@ -780,11 +802,36 @@ class Model:
         self.log.debug("Sensor entities are OFF.")
         return None
 
+    def _forced_sensor_entity_state(self):
+        for e in self.forcedSensorEntities:
+            s = self.hass.states.get(e)
+            try:
+                state = s.state
+            except AttributeError as ex:
+                self.log.error(
+                    "Potential configuration error: Forced Sensor Entity ({}) does not exist (yet). Please check for spelling and typos. {}".format(
+                        e, ex
+                    )
+                )
+                return None
+
+            if self.matches(state, self.SENSOR_ON_STATE):
+                self.log.debug("Forced sensor entities are ON. [%s]", e)
+                return e
+        self.log.debug("Forced sensor entities are OFF.")
+        return None
+
     def is_sensor_off(self):
         return self._sensor_entity_state() is None
 
     def is_sensor_on(self):
         return self._sensor_entity_state() is not None
+
+    def is_forced_sensor_off(self):
+        return self._forced_sensor_entity_state() is None
+
+    def is_forced_sensor_on(self):
+        return self._forced_sensor_entity_state() is not None
 
     def _state_entity_state(self):
         for e in self.stateEntities:
@@ -819,6 +866,9 @@ class Model:
     def will_stay_on(self):
         return self.stay
 
+    def forced_on(self):
+        return self.forced
+
     def is_night(self):
         if self.night_mode is None:
             return False  # if night mode is undefined, it's never night :)
@@ -833,6 +883,9 @@ class Model:
 
     def is_duration_sensor(self):
         return self.sensor_type == SENSOR_TYPE_DURATION
+
+    def is_change_sensor(self):
+        return self.sensor_type == SENSOR_TYPE_CHANGE
 
     def is_timer_expired(self):
         expired = self.timer_handle.is_alive() == False
@@ -977,8 +1030,11 @@ class Model:
 
     def config_sensor_entities(self, config):
         self.sensorEntities = []
+        self.forcedSensorEntities = []
         self.add(self.sensorEntities, config, CONF_SENSOR)
         self.add(self.sensorEntities, config, CONF_SENSORS)
+        self.add(self.sensorEntities, config, CONF_FORCED_SENSORS)
+        self.add(self.forcedSensorEntities, config, CONF_FORCED_SENSORS)
 
         if len(self.sensorEntities) == 0:
             self.log.error(
@@ -986,6 +1042,7 @@ class Model:
             )
 
         self.log.debug("Sensor Entities: " +  pprint.pformat(self.sensorEntities))
+        self.log.debug("Forced Sensor Entities: " +  pprint.pformat(self.forcedSensorEntities))
 
         event.async_track_state_change(
             self.hass, self.sensorEntities, self.sensor_state_change
@@ -1701,6 +1758,7 @@ class Model:
         self.log.debug("--------------------------------------------------")
         self.log.debug("Entity Controller       %s", self.name)
         self.log.debug("Sensor Entities         %s", str(self.sensorEntities))
+        self.log.debug("Forced Sensor Entities  %s", str(self.forcedSensorEntities))
         self.log.debug("Control Entities:       %s", str(self.controlEntities))
         self.log.debug("State Entities:         %s", str(self.stateEntities))
         self.log.debug("Activate Trigger E.:    %s", str(self.triggerOnActivate))
