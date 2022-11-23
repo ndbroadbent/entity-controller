@@ -485,6 +485,7 @@ class Model:
     """ Represents the transitions state machine model """
 
     def __init__(self, hass, config, machine, entity):
+        self.start_time = datetime.now()
         self.hass = hass  # backwards reference to hass object
         self.entity = entity  # backwards reference to entity containing this model
 
@@ -581,6 +582,11 @@ class Model:
             self.log.debug("sensor_state_change :: old NoneType")
             pass
 
+        # Ignore state changes for 45 seconds while entity states are being initialized
+        if (datetime.now() - self.start_time).total_seconds() < 45:
+            self.log.debug("sensor_state_change :: Ignoring state change for 45 seconds after startup")
+            return
+
         if self.matches(new.state, self.SENSOR_ON_STATE) and (
             self.is_idle() or self.is_active_timer() or self.is_blocked()
         ):
@@ -642,6 +648,11 @@ class Model:
         )
         if self.is_ignored_context(new.context):
             self.log.debug("state_entity_state_change :: Ignoring this state change because it came from %s" % (new.context.id))
+            return
+
+        # Ignore state changes for 45 seconds while entity states are being initialized
+        if (datetime.now() - self.start_time).total_seconds() < 45:
+            self.log.debug("state_entity_state_change :: Ignoring state change for 45 seconds after startup")
             return
 
         #  If the state changed, we definitely want to handle the transition. If only attributes changed, we'll check if the new attributes are significant (i.e., not being ignored).
@@ -1137,6 +1148,16 @@ class Model:
             event.async_track_state_change(
                 self.hass, self.overrideEntities, self.override_state_change
             )
+            # Check if controller needs to be overridden in 40 seconds (after all entity states initialized)
+            self.log.debug("Scheduling check_override_callback for %s", datetime.now() + timedelta(seconds=40))
+            self.check_override_event_hook = event.async_track_point_in_time(
+                self.hass, self.check_override_callback, datetime.now() + timedelta(seconds=40)
+            )
+
+    def check_override_callback(self, evt):
+        if self.is_override_state_on():
+            self.override()
+            self.update(overridden_at=str(datetime.now()))
 
     def config_other(self, config):
         self.do_draw = config.get("draw", False)
