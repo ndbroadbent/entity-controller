@@ -108,7 +108,7 @@ from .entity_services import (
 
 VERSION = '9.6.0'
 
-
+logging.basicConfig(level=logging.DEBUG)
 _LOGGER = logging.getLogger(__name__)
 
 devices = []
